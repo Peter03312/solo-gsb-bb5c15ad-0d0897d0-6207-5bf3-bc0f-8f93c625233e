@@ -5,10 +5,10 @@ from typing import Optional
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
-from . import db, service
+from . import db, service, simulation
 from .derivation import RELATION_LABELS
 from .errors import ApiError
-from .models import BatchIn, SnapshotIn, StratumIn
+from .models import BatchIn, SimBatchIn, SimulationIn, SnapshotIn, StratumIn
 
 
 @asynccontextmanager
@@ -19,12 +19,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="考古地层关系核验服务",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "登记遗址地层与带唯一证据编号的“同一期 / 早于”断言；"
         "同一期可传递，早于沿同一期与早于路径推导；"
         "批次携带修订号、按整批最终关系核验，矛盾整批拒绝；"
-        "支持关系查询（含支撑证据路径）与不可变定版快照。"
+        "支持关系查询（含支撑证据路径）与不可变定版快照；"
+        "支持推演：固定基线的模拟修订，推演内批次核验，"
+        "并入时把相对基线的净变更应用于最新正式状态重新核验后原子提交。"
     ),
     lifespan=lifespan,
 )
@@ -127,6 +129,53 @@ def list_assertions(status: Optional[str] = Query(default=None, pattern="^(activ
 def get_relationship(a: str = Query(description="地层编号"), b: str = Query(description="地层编号")):
     """查询两地层当前关系：同一期 / 早于 / 晚于 / 未定，附支撑证据路径。"""
     return service.query_relationship(a, b)
+
+
+# ------------------------------------------------------------------ 推演（模拟修订）
+@app.post("/simulations", status_code=201, tags=["simulations"])
+def post_simulation(body: SimulationIn):
+    """创建推演：固定当前正式修订号、已登记地层与生效断言；不改动正式数据。"""
+    return simulation.create_simulation(body)
+
+
+@app.get("/simulations", tags=["simulations"])
+def get_simulations():
+    """推演列表。"""
+    return simulation.list_simulations()
+
+
+@app.get("/simulations/{sim_id}", tags=["simulations"])
+def get_simulation_detail(sim_id: str):
+    """推演详情：基线/推演修订号、固定地层、推演内断言及相对基线的净变更。"""
+    return simulation.get_simulation(sim_id)
+
+
+@app.get("/simulations/{sim_id}/assertions", tags=["simulations"])
+def get_simulation_assertions(
+    sim_id: str, status: Optional[str] = Query(default=None, pattern="^(active|retracted)$")
+):
+    """推演内断言列表（含 baseline / sim 来源标记）。"""
+    return simulation.list_sim_assertions(sim_id, status)
+
+
+@app.post("/simulations/{sim_id}/batches", tags=["simulations"])
+def post_simulation_batch(sim_id: str, batch: SimBatchIn):
+    """推演内提交一批新增/撤回；携带推演修订号，沿用整批核验语义。"""
+    return simulation.apply_sim_batch(sim_id, batch)
+
+
+@app.get("/simulations/{sim_id}/relationship", tags=["simulations"])
+def get_simulation_relationship(
+    sim_id: str, a: str = Query(description="地层编号"), b: str = Query(description="地层编号")
+):
+    """查询推演内两地层关系及支撑证据路径（证据标注 baseline/sim 来源）。"""
+    return simulation.query_sim_relationship(sim_id, a, b)
+
+
+@app.post("/simulations/{sim_id}/merge", tags=["simulations"])
+def post_simulation_merge(sim_id: str):
+    """把推演净变更并入最新正式状态并重新核验；通过则作为一次正式批次原子提交并关闭推演。"""
+    return simulation.merge_simulation(sim_id)
 
 
 # ------------------------------------------------------------------ 定版

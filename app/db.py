@@ -61,6 +61,54 @@ CREATE TABLE IF NOT EXISTS snapshot_conclusions (
     path      JSONB NOT NULL,
     PRIMARY KEY (version, stratum_a, stratum_b)
 );
+
+-- ------------------------------------------------------------------ 推演（模拟修订，不触碰正式断言）
+-- 创建时固定：基线正式修订号、已登记地层快照、生效断言快照
+CREATE TABLE IF NOT EXISTS simulations (
+    sim_id          TEXT PRIMARY KEY,
+    base_revision   INTEGER NOT NULL,                 -- 创建时的正式修订号（固定，不再随正式历史移动）
+    sim_revision    INTEGER NOT NULL DEFAULT 0,       -- 推演内部修订号（沿用批次原子递增语义）
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    label           TEXT,
+    merged_revision INTEGER,                          -- 并入后落地的正式修订号；净变更为空时不递增，保持 NULL
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at       TIMESTAMPTZ
+);
+
+-- 推演内的已登记地层：创建时快照当前正式地层；推演内新增断言只能引用这些地层
+CREATE TABLE IF NOT EXISTS sim_strata (
+    sim_id     TEXT NOT NULL REFERENCES simulations(sim_id),
+    stratum_id TEXT NOT NULL,
+    site       TEXT,
+    PRIMARY KEY (sim_id, stratum_id)
+);
+
+-- 推演内断言只增不删，撤回仅置状态。
+-- origin='baseline'：创建时从正式生效断言复制（证据编号=正式编号）；
+-- origin='sim'：推演内新增（证据编号仅在本推演命名空间内唯一）。
+CREATE TABLE IF NOT EXISTS sim_assertions (
+    sim_id              TEXT NOT NULL REFERENCES simulations(sim_id),
+    evidence_id         TEXT NOT NULL,
+    stratum_a           TEXT NOT NULL,
+    stratum_b           TEXT NOT NULL,
+    relation            TEXT NOT NULL CHECK (relation IN ('same_period', 'earlier_than')),
+    status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retracted')),
+    origin              TEXT NOT NULL CHECK (origin IN ('baseline', 'sim')),
+    added_sim_revision  INTEGER NOT NULL,
+    retracted_sim_revision INTEGER,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retracted_at        TIMESTAMPTZ,
+    PRIMARY KEY (sim_id, evidence_id)
+);
+
+-- 推演内每次成功批次的审计记录
+CREATE TABLE IF NOT EXISTS sim_revisions (
+    sim_id     TEXT NOT NULL REFERENCES simulations(sim_id),
+    sim_revision INTEGER NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    batch      JSONB NOT NULL,
+    PRIMARY KEY (sim_id, sim_revision)
+);
 """
 
 _pool: "psycopg2.pool.ThreadedConnectionPool | None" = None
