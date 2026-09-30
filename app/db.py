@@ -61,6 +61,56 @@ CREATE TABLE IF NOT EXISTS snapshot_conclusions (
     path      JSONB NOT NULL,
     PRIMARY KEY (version, stratum_a, stratum_b)
 );
+
+-- 推演（证据修订沙盘）：创建时固定正式修订号、已登记地层与生效断言快照，
+-- 不触碰正式状态；并入（merge）时才把相对基线的净变更原子应用到最新正式状态。
+CREATE TABLE IF NOT EXISTS projections (
+    id                     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    label                  TEXT,
+    base_revision          INTEGER NOT NULL,
+    base_strata            JSONB NOT NULL,
+    base_assertions        JSONB NOT NULL,
+    projection_revision    INTEGER NOT NULL DEFAULT 0,
+    status                 TEXT NOT NULL DEFAULT 'open'
+                               CHECK (status IN ('open', 'merged', 'discarded')),
+    merged_into_revision   INTEGER,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at              TIMESTAMPTZ
+);
+
+-- 推演内新增的断言（编号在该推演内唯一；与正式断言表无外键关系，
+-- 因为这些编号尚未进入正式历史，并入核验通过后才写入正式 assertions）。
+CREATE TABLE IF NOT EXISTS projection_assertions (
+    projection_id      BIGINT NOT NULL REFERENCES projections(id),
+    evidence_id        TEXT NOT NULL,
+    stratum_a          TEXT NOT NULL,
+    stratum_b          TEXT NOT NULL,
+    relation           TEXT NOT NULL CHECK (relation IN ('same_period', 'earlier_than')),
+    status             TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retracted')),
+    added_revision     INTEGER NOT NULL,
+    retracted_revision INTEGER,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retracted_at       TIMESTAMPTZ,
+    PRIMARY KEY (projection_id, evidence_id)
+);
+
+-- 推演内对基线断言的撤回（撤回只增不删，同一基线证据在同一推演内仅可撤回一次）。
+CREATE TABLE IF NOT EXISTS projection_retractions (
+    projection_id      BIGINT NOT NULL REFERENCES projections(id),
+    evidence_id        TEXT NOT NULL,
+    retracted_revision INTEGER NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (projection_id, evidence_id)
+);
+
+-- 推演内每次成功批次的审计记录（修订号为推演自身修订号）。
+CREATE TABLE IF NOT EXISTS projection_revisions (
+    projection_id BIGINT NOT NULL REFERENCES projections(id),
+    revision      INTEGER NOT NULL,
+    applied_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    batch         JSONB NOT NULL,
+    PRIMARY KEY (projection_id, revision)
+);
 """
 
 _pool: "psycopg2.pool.ThreadedConnectionPool | None" = None

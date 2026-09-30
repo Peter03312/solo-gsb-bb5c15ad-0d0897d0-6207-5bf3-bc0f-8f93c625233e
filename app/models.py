@@ -39,3 +39,17 @@ class BatchIn(BaseModel):
 
 class SnapshotIn(BaseModel):
     label: Optional[str] = Field(default=None, max_length=256, description="版本备注")
+
+
+class ProjectionIn(BaseModel):
+    """创建推演：固定当前正式修订号、已登记地层与生效断言快照。"""
+
+    label: Optional[str] = Field(default=None, max_length=256, description="推演备注")
+
+
+class ProjectionBatchIn(BaseModel):
+    """推演内的一批断言变更。须携带该推演当前修订号（自 0 起，批次成功后递增）；
+    语义与正式批次一致：整批按应用后的最终关系核验，任一冲突则整批拒绝、推演状态不变。"""
+
+    expected_revision: int = Field(ge=0, description="该推演当前修订号；不一致则整批拒绝")
+    operations: List[Operation] = Field(min_length=1)

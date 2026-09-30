@@ -5,10 +5,10 @@ from typing import Optional
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
-from . import db, service
+from . import db, projections, service
 from .derivation import RELATION_LABELS
 from .errors import ApiError
-from .models import BatchIn, SnapshotIn, StratumIn
+from .models import BatchIn, ProjectionBatchIn, ProjectionIn, SnapshotIn, StratumIn
 
 
 @asynccontextmanager
@@ -19,12 +19,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="考古地层关系核验服务",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "登记遗址地层与带唯一证据编号的“同一期 / 早于”断言；"
         "同一期可传递，早于沿同一期与早于路径推导；"
         "批次携带修订号、按整批最终关系核验，矛盾整批拒绝；"
-        "支持关系查询（含支撑证据路径）与不可变定版快照。"
+        "支持关系查询（含支撑证据路径）与不可变定版快照；"
+        "支持推演（沙盘）：固定基线修订号与断言，推演内独立批次核验，"
+        "并入时把相对基线的净变更应用于最新正式状态并重新核验。"
     ),
     lifespan=lifespan,
 )
@@ -135,7 +137,6 @@ def post_snapshot(body: SnapshotIn):
     """定版：保存当前修订号下全部关系结论的不可变快照。"""
     return service.create_snapshot(body.label)
 
-
 @app.get("/snapshots", tags=["snapshots"])
 def list_snapshots():
     with db.db_conn() as conn:
@@ -156,3 +157,58 @@ def get_snapshot(version: int):
 def get_snapshot_relationship(version: int, a: str = Query(...), b: str = Query(...)):
     """查询历史版本结论；后续撤回不影响旧版。"""
     return service.query_snapshot_relationship(version, a, b)
+
+
+# ------------------------------------------------------------------ 推演（证据修订沙盘）
+@app.post("/projections", status_code=201, tags=["projections"])
+def create_projection(body: ProjectionIn):
+    """创建推演：固定当前正式修订号、已登记地层与生效断言；正式状态不变。"""
+    return projections.create_projection(body.label)
+
+
+@app.get("/projections", tags=["projections"])
+def list_projections():
+    """推演列表。"""
+    return projections.list_projections()
+
+
+@app.get("/projections/{projection_id}", tags=["projections"])
+def get_projection(projection_id: int):
+    """推演详情：基线信息、推演内新增/撤回、相对基线的净变更。"""
+    return projections.get_projection(projection_id)
+
+
+@app.post("/projections/{projection_id}/batches", tags=["projections"])
+def post_projection_batch(projection_id: int, batch: ProjectionBatchIn):
+    """在推演内提交一批断言新增/撤回。
+
+    沿用正式批次语义：携带推演修订号（自 0 起）、整批核验；
+    新增编号不得复用正式历史编号，且在本推演内不可复用；
+    成功后递增推演修订号，正式状态始终不变。
+    """
+    return projections.apply_projection_batch(projection_id, batch)
+
+
+@app.get("/projections/{projection_id}/relationship", tags=["projections"])
+def get_projection_relationship(
+    projection_id: int, a: str = Query(description="地层编号"), b: str = Query(description="地层编号")
+):
+    """查询推演视角下两地层的关系及支撑证据路径（路径标注 base/projection 来源）。"""
+    return projections.query_projection_relationship(projection_id, a, b)
+
+
+@app.post("/projections/{projection_id}/merge", tags=["projections"])
+def merge_projection(projection_id: int):
+    """并入正式状态：把净变更应用于最新正式状态并重新核验。
+
+    基线目标已撤回 / 编号已被正式占用 / 关系冲突（附证据路径）时返回具体原因，
+    正式状态与推演均不变；通过则作为一次正式批次原子提交并关闭推演；
+    净变更为空时只关闭推演，不递增正式修订号。
+    """
+    return projections.merge_projection(projection_id)
+
+
+@app.delete("/projections/{projection_id}", tags=["projections"])
+def discard_projection(projection_id: int):
+    """放弃推演（仅 open 可放弃，放弃后不可并入）。"""
+    return projections.discard_projection(projection_id)
